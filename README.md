@@ -132,6 +132,6 @@ Dự án được phát triển bởi các thành viên:
 
 | Họ và Tên | Vai trò |
 |---|---|
-| [Họ và tên] | Cập nhật sau. |
-| [Họ và tên] | Cập nhật sau. |
-| [Họ và tên] | Cập nhật sau. |
+| Hồ Khắc Sơn | Cập nhật sau. |
+| Bùi Anh Tuấn | Cập nhật sau. |
+| Nguyễn Hữu Mạnh | Cập nhật sau. |
