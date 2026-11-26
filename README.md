@@ -14,7 +14,7 @@ Hệ thống được thiết kế theo kiến trúc phân tầng, bao gồm:
 ## Ảnh và video demo
 
 - Ảnh mô hình:
-![alt text](<PPoster_CNTT5_Aiot.png>)
+![alt text](<Poster_CNTT5_Aiot.png>)
 
 ## Chức năng chính
 
