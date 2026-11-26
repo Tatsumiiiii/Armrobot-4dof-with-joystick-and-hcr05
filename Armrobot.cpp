@@ -1,55 +1,47 @@
-/*
-  Cánh tay robot 4 bậc - tự động phát hiện vật ở 3 ô, gắp, mang tới ĐÍCH rồi về vị trí mở đầu.
-  Các servo di chuyển LẦN LƯỢT TỪNG CÁI (đế -> vai -> khuỷu), không chạy cùng lúc.
-  Joystick vẫn dùng được để chỉnh tay (khi gạt, chế độ tự động tạm dừng).
-
-  Servo    : D11 (đế), D10 (vai), D9 (khuỷu), D6 (kẹp)
-  Joystick : A0, A1 (cần trái X, Y), A2, A3 (cần phải X, Y)
-  HC-SR05  : VCC = 5V, GND = GND, TRIG = D12, ECHO = D13 (chân OUT để trống)
-
-  Một lượt gắp (khi thấy vật trong ô N):
-    1. Mở kẹp
-    2. Vươn tới tư thế ô N:  đế -> vai -> khuỷu
-    3. Khép kẹp để gắp (góc kẹp lấy từ tư thế của ô N)
-    4. Mang tới ĐÍCH:        đế -> vai -> khuỷu
-    5. Mở kẹp thả vật
-    6. Về vị trí MỞ ĐẦU:     đế -> vai -> khuỷu -> kẹp
-    7. Chờ các ô trống rồi mới nhận vật tiếp theo
-*/
-
 #include <Arduino.h>
-#include <Servo.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+// ---------- PCA9685 ----------
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);   // địa chỉ I2C mặc định 0x40
+const byte servoCh[4] = {0, 1, 2, 3};          // kênh PCA9685: đế, vai, khuỷu, kẹp
+const float PWM_FREQ = 50;                     // servo dùng 50 Hz
+const uint32_t OSC_FREQ = 27000000;            // dao động nội của PCA9685 (có thể chỉnh nếu bị lệch)
+
+// Độ rộng xung (microsecond) ứng với 0 độ và 180 độ.
+// 544 / 2400 là giá trị mặc định của thư viện Servo.h cũ, giữ nguyên để các góc không bị lệch.
+const int SERVO_MIN_US = 544;
+const int SERVO_MAX_US = 2400;
 
 // ---------- Chân ----------
 const byte TRIG_PIN = 12;
 const byte ECHO_PIN = 13;
-const byte servoPins[4] = {11, 10, 9, 6};     // đế, vai, khuỷu, kẹp
 const byte joyPins[4]   = {A0, A1, A2, A3};
 
 // ---------- Giới hạn servo ----------
-const int minA[4] = {0, 30, 20, 25};
+const int minA[4] = {0, 30, 20, 15};
 const int maxA[4] = {180, 150, 160, 95};
 int dir[4] = {1, 1, 1, 1};                    // đổi thành -1 nếu gạt cần ngược chiều mong muốn
 
 // ---------- Các tư thế: {đế, vai, khuỷu, kẹp} ----------
 const int START_POSE[4] = {90, 122, 61, 90};  // mở đầu
-const int DEST_POSE[4]  = {45, 100, 74, 90};  // đích (nơi thả vật)
+const int DEST_POSE[4]  = {38, 100, 74, 90};  // đích (nơi thả vật)
 
 // ---------- 3 ô: khoảng cách (mm) tính từ MẶT CẢM BIẾN ----------
 const byte NUM_ZONES = 3;
-const int ZONE_LO[NUM_ZONES] = {  80, 110, 130};   // mm (tính cả đầu này)
-const int ZONE_HI[NUM_ZONES] = { 100, 130, 150};   // mm (không tính đầu này)
+const int ZONE_LO[NUM_ZONES] = {  79, 100, 117};   // mm (tính cả đầu này)
+const int ZONE_HI[NUM_ZONES] = { 100, 117, 140};   // mm (không tính đầu này)
 // Ô 1: 8-10 cm, ô 2: 11-13 cm, ô 3: 13-15 cm. Khoảng 10-11 cm, dưới 8 cm và trên 15 cm bị bỏ qua.
 
 // Tư thế vươn tới từng ô. Số cuối là góc kẹp khi ĐÓNG GẮP vật.
 const int ZONE_POSE[NUM_ZONES][4] = {
-  {90,  80,  92, 90},    // ô 1
-  {90, 108, 106, 90},    // ô 2
-  {90, 137, 114, 84}     // ô 3
+  {90,  87,  96, 90},    // ô 1
+  {90, 100, 105, 90},    // ô 2
+  {90, 129, 120, 84}     // ô 3
 };
 
 // ---------- Kẹp ----------
-const int GRIP_OPEN = 40;               // góc kẹp mở
+const int GRIP_OPEN = 15;               // góc kẹp mở
 
 // ---------- Thứ tự servo khi di chuyển (0 = đế, 1 = vai, 2 = khuỷu) ----------
 const byte ORDER_ZONE[3]  = {0, 1, 2};  // lúc vươn tới ô
@@ -57,10 +49,11 @@ const byte ORDER_DEST[3]  = {2 ,1 ,0};  // lúc mang tới đích
 const byte ORDER_START[3] = {0, 1, 2};  // lúc về mở đầu
 
 // ---------- Cài đặt phản hồi cảm biến ----------
-const unsigned long SENSE_INTERVAL = 60;    // ms giữa 2 lần đo (chậm hơn để tiếng dội cũ tắt hẳn)
+const unsigned long SENSE_INTERVAL = 160;    // ms giữa 2 lần đo (chậm hơn để tiếng dội cũ tắt hẳn)
 const byte NUM_SAMPLES = 5;                 // đo 5 lần rồi chọn giá trị ở giữa (trung vị)
 const byte MIN_AGREE   = 3;                 // ít nhất 3/5 lần đo phải rơi vào cùng một ô
-const int  CLEAR_N     = 5;                 // số lần đo liên tiếp "trống" để nhận vật mới
+const int  CLEAR_N     = 5;                 // số điểm "trống" cần đạt để nhận vật mới
+const unsigned long CLEAR_TIMEOUT_MS = 8000; // chờ ô trống tối đa bao lâu thì thôi, quay lại đo
 const unsigned long ECHO_TIMEOUT_US = 4000; // nghe tối đa ~65 cm
 
 // ---------- Cài đặt thời gian và tốc độ ----------
@@ -77,7 +70,6 @@ const int SMOOTH_STEP  = 2;                 // servo tiến bao nhiêu độ m�
 const bool DEBUG = true;
 
 // ---------- Biến ----------
-Servo servos[4];
 int angle[4];
 int target[4];
 int center[4];
@@ -90,6 +82,7 @@ bool pickRun   = false;      // kịch bản đang chạy là lượt gắp (tru
 int  samples[NUM_SAMPLES];   // các lần đo của đợt hiện tại
 byte sampleCount = 0;
 int  clearCount = 0;
+unsigned long clearStart = 0;   // thời điểm bắt đầu chờ ô trống
 unsigned long lastSense  = 0;
 unsigned long lastServo  = 0;
 unsigned long lastManual = 0;
@@ -189,13 +182,19 @@ bool runScript() {
   return stepIdx >= stepCount;
 }
 
-// ---------- Servo ----------
+// ---------- Servo (qua PCA9685) ----------
+// Ghi góc (0-180 độ) ra kênh PCA9685 của servo i
+void writeServo(byte i, int deg) {
+  int us = map(deg, 0, 180, SERVO_MIN_US, SERVO_MAX_US);
+  pwm.writeMicroseconds(servoCh[i], us);
+}
+
 void updateServos() {
   for (byte i = 0; i < 4; i++) {
     if (angle[i] != target[i]) {
       int diff = target[i] - angle[i];
       angle[i] += constrain(diff, -SMOOTH_STEP, SMOOTH_STEP);
-      servos[i].write(angle[i]);
+      writeServo(i, angle[i]);
     }
   }
 }
@@ -307,7 +306,10 @@ void runAuto() {
       if (runScript()) {
         if (pickRun) {
           clearCount = 0;
+          clearStart = millis();
+          lastSense = millis();                    // chờ đủ 1 nhịp rồi mới đo, tránh rung/dội lúc vừa dừng
           state = S_WAIT_CLEAR;
+          Serial.println(F("Cho o trong..."));
         } else {
           sampleCount = 0;
           state = S_IDLE;
@@ -315,15 +317,26 @@ void runAuto() {
       }
       break;
 
-    case S_WAIT_CLEAR:
+    case S_WAIT_CLEAR: {
       if (!senseDue()) break;
-      if (zoneOf(readMm()) < 0) clearCount++;
-      else clearCount = 0;
+      int mm = readMm();
+      if (zoneOf(mm) < 0) clearCount++;            // đo thấy trống: +1
+      else if (clearCount > 0) clearCount--;       // nhiễu 1 lần chỉ trừ 1, không về 0
+      if (DEBUG) {
+        Serial.print(F("Cho trong: "));  Serial.print(mm);
+        Serial.print(F(" mm, clear=")); Serial.print(clearCount);
+        Serial.print('/');               Serial.println(CLEAR_N);
+      }
       if (clearCount >= CLEAR_N) {
+        sampleCount = 0;
+        state = S_IDLE;
+      } else if (millis() - clearStart > CLEAR_TIMEOUT_MS) {
+        Serial.println(F("Het gio cho o trong, tiep tuc do"));
         sampleCount = 0;
         state = S_IDLE;
       }
       break;
+    }
   }
 }
 
@@ -332,6 +345,12 @@ void setup() {
   Serial.begin(9600);
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
+
+  // Khởi động PCA9685
+  pwm.begin();
+  pwm.setOscillatorFrequency(OSC_FREQ);
+  pwm.setPWMFreq(PWM_FREQ);
+  delay(10);
 
   // Đo tâm joystick: đừng chạm vào cần khi vừa bật nguồn
   for (byte i = 0; i < 4; i++) {
@@ -344,8 +363,7 @@ void setup() {
   for (byte i = 0; i < 4; i++) {
     angle[i]  = constrain(START_POSE[i], minA[i], maxA[i]);
     target[i] = angle[i];
-    servos[i].attach(servoPins[i]);
-    servos[i].write(angle[i]);
+    writeServo(i, angle[i]);
   }
   Serial.println(F("San sang - dang o vi tri mo dau"));
 }
